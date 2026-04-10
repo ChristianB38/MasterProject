@@ -73,7 +73,7 @@ class LLGsim:
         )
         ax3d.text(
             *(m0 + 0.35 * v_damp / np.linalg.norm(v_damp)),
-            r'$- \mathbf{M}\times(\mathbf{M}\times\mathbf{H}_{eff})$',
+            r'$ \mathbf{M}\times\frac{d\mathbf{M}}{dt}$',
             color='purple', fontsize=20
         )
 

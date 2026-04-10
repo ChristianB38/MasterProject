@@ -49,8 +49,8 @@ class HH:
         self.zerofield_correction = zerofield_correction
 
         if self.Rxx is not None and self.Width is not None and self.Length is not None:
-            self.resitivity = self.calculate_resistivity(self.Rxx, self.Width * self.Length, self.Length)  # in Ohm·m
-            print("Calculated resistivity:", self.resitivity, "Ohm·m")
+            self.resistivity = self.calculate_resistivity(self.Rxx, self.Width * (self.d_FM + self.d_NM), self.Length)  # in Ohm·m
+            print("Calculated resistivity:", self.resistivity, "Ohm·m = ", self.resistivity*1e4, "µOhm·cm")   
         else:
             print("Warning: Rxx, Width, or Length not provided. Resistivity calculation skipped.")
 
@@ -108,30 +108,35 @@ class HH:
         return data, header_data
 
     def sort_files_by_voltage(self):
-        # group by applied voltage
         groups = {}
         zerofield_data = {}
 
         for f in os.listdir(self.folder2nd):
-            if f.lower().endswith(".txt"):
-                fpath = os.path.join(self.folder2nd, f)
+            if not f.lower().endswith(".txt"):
+                continue
+
+            fpath = os.path.join(self.folder2nd, f)
+
+            try:
                 data, header = self.read_file(fpath)
+
                 if len(data['R2w_y']) < 15:
                     os.remove(fpath)
                     continue
-                V = header["Voltage_for_measurment"]
-                Bext = header["Gausseter"] 
-                if abs(Bext) < 10:  
-                    print('Zerofield data found for V =', V)
-                    # self.fit_2nd_harm(data, header, plot=True)
+
+                V = round(float(header["Voltage_for_measurment"]), 3)
+                Bext = float(header["Gausseter"])
+
+                if abs(Bext) < 10:
+                    print(f"Zerofield data found for V = {V}")
                     if self.zerofield_correction is True:
-
                         zerofield_data[V] = data['R2w_y']
-
-                    elif self.zerofield_correction is None:
-                        pass
                 else:
                     groups.setdefault(V, []).append(f)
+
+            except Exception as e:
+                print(f"Failed to process {f}: {e}")
+
         return groups, zerofield_data
 
     # Quick plotting functions
@@ -318,8 +323,8 @@ class HH:
         if plot:
             fig, axs = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
             # Plot raw data (degrees)
-            axs[0].plot(data['Angle'], data['R2w_y'] * 1e3,
-                        label='Second Harmonic Y-signal',
+            axs[0].scatter(data['Angle'], data['R2w_y'] * 1e3,
+                        label='Raw data',
                         color='orange')
 
             # Plot fit (converted to radians)
@@ -328,14 +333,14 @@ class HH:
 
             # Cosine component — also use radians!
             axs[0].plot(phi, popt[0] * np.cos(phi_rad + popt[3]) * 1e3 + popt[2] * 1e3,
-                        label='Cosine Component', color='blue', linestyle=':')
+                        label='Cos($\\phi$) dependence', color='blue', linestyle=':')
 
-            axs[0].set_ylabel('Second Harmonic Hall Resistance (m $\\Omega$)')
-            axs[0].set_title(
-                f'Second Harmonic vs Angle, '
-                f'B = {header_data["Gausseter"]} {header_data["Gausseter_unit"]}, '
-                f'V = {header_data["Voltage_for_measurment"]} {header_data["Voltage_for_measurment_unit"]}'
-            )        
+            axs[0].set_ylabel('$R_{xy}^{2 \\omega}$ (m $\\Omega$)', fontsize=13)
+            # axs[0].set_title(
+            #     f'Second Harmonic vs Angle, '
+            #     f'B = {header_data["Gausseter"]} {header_data["Gausseter_unit"]}, '
+            #     f'V = {header_data["Voltage_for_measurment"]} {header_data["Voltage_for_measurment_unit"]}'
+            # )        
             axs[0].legend()
 
             # ------------------------------
@@ -343,19 +348,21 @@ class HH:
             # ------------------------------
             dep = (data['R2w_y'] - popt[0]*np.cos(angles_rad))*1e3
 
-            axs[1].plot(data['Angle'], dep,
-                        label='Only ... depenence', color='orange')
+            axs[1].scatter(data['Angle'], dep,
+                        label='FL contribution', color='orange')
             axs[1].plot(phi, (popt[1]*(2*np.cos(phi_rad+popt[3])**3 - np.cos(phi_rad+popt[3])) + popt[2])*1e3,
                         label='Fit', color='red', linestyle='--')
-            axs[1].set_xlabel('Angle (degrees)')
-            axs[1].set_ylabel('Second Harmonic Resistance (m $\\Omega$)')
-            axs[1].set_title(
-                f'Second Harmonic vs Angle, '
-                f'B = {header_data["Gausseter"]} {header_data["Gausseter_unit"]}, '
-                f'V = {header_data["Voltage_for_measurment"]} {header_data["Voltage_for_measurment_unit"]}'
+            axs[1].set_xlabel('Angle (degrees)', fontsize=13)
+            axs[1].set_ylabel('$R_{xy}^{2 \\omega}$ (m $\\Omega$)', fontsize=13)
+            fig.suptitle(
+                f"Second harmonic Hall resistance"
+                # f"{header_data['Gausseter']} {header_data['Gausseter_unit']}, "
+                # f"V = {header_data['Voltage_for_measurment']} {header_data['Voltage_for_measurment_unit']}"
             )
             axs[1].legend()
+            print(f"{header_data['Gausseter']} {header_data['Gausseter_unit']}, ",
 
+                f"V = {header_data['Voltage_for_measurment']} {header_data['Voltage_for_measurment_unit']}")
             # Improve spacing
             plt.tight_layout()
             plt.show()
@@ -367,8 +374,8 @@ class HH:
         groups, zerofield_data = self.sort_files_by_voltage()
 
         # Step 2: For each voltage, fit all files and plot results
-        for V, files in groups.items():
-            print(f'Processing voltage: {V} V with files: {files}')
+        for V, files in sorted(groups.items()):            
+            # print(f'Processing voltage: {V} V with files: {files}')
             file_field_pairs = []
             for f in files:
                 _, header = self.read_file(os.path.join(self.folder2nd, f))
@@ -399,17 +406,17 @@ class HH:
             fig, ax = plt.subplots(2, 1, figsize=(12,16))
             ax[0].errorbar(1/np.array(fields_DL), np.array(popts_list)[:, 0], yerr=yerr_A, marker='o', label=f'V = {V} V')
             ax[1].errorbar(1/np.array(fields_FL), np.array(popts_list)[:, 1], yerr=yerr_B, marker='o', label=f'V = {V} V')
-            ax[0].set_xlabel('1/(Bext + Bk) ($T^{-1}$)')
-            ax[0].set_ylabel('Coefficient A = $\\left[ \\frac{R_{AHE}}{2} B_{AD} + T \\right]$ ($\\Omega$)')
-            ax[0].set_title('Field Dependence of cos($\\phi$) ')
-            ax[1].set_xlabel('1/Bext ($T^{-1}$)')
-            ax[1].set_ylabel('Coefficient B = $\\left[ 2 R_{PHE}(B_{FL} + B_{Oe})$ ($\\Omega$) \\right]')
-            ax[1].set_title('Field Dependence of ($2cos^3(\\phi) - cos(\\phi)$) ')
+            ax[0].set_xlabel('1/(Bext + Bk) ($T^{-1}$)', fontsize=13)
+            ax[0].set_ylabel('Coefficient A = $\\left[ \\frac{R_{AHE}}{2} B_{AD} + T \\right]$ ($\\Omega$)', fontsize=13)
+            ax[0].set_title('Field Dependence of cos($\\phi$) ', fontsize=14)
+            ax[1].set_xlabel('1/Bext ($T^{-1}$)',fontsize=13)
+            ax[1].set_ylabel('Coefficient B = $\\left[ 2 R_{PHE}(B_{FL} + B_{Oe})$ ($\\Omega$) \\right]',fontsize=13)
+            ax[1].set_title('Field Dependence of ($2cos^3(\\phi) - cos(\\phi)$) ', fontsize=14)
             ax[0].legend()
             ax[1].legend()
             plt.show()
 
-    def extract_per_voltage(self, filelist, plot=True, V=None, color='blue', zerofield_data=True, plot_fits=True):
+    def extract_per_voltage(self, filelist, plot=True, V=None, color='blue', zerofield_data=None, plot_fits=True):
         results = []  
         # ---- STEP 1: Fit angular dependence for each field ----
         for file in filelist:
@@ -443,6 +450,7 @@ class HH:
                     "B_err": np.sqrt(pcov[1,1]),
                     'Size': len(data['R2w_y'])
                 })
+                # print(f"Results {results} for {file}")
             except:
                 print(f'Failed to extract data from {file}, skipping file.')
                     
@@ -474,7 +482,7 @@ class HH:
                 fmt='o',
                 markerfacecolor='black', 
                 markeredgewidth=1,     # Thicker border around the point
-                label=f'Data Points V = {V}', 
+                label=f'V$_{{app}}$ = {V}', 
                 color=color,
                 elinewidth=1,            # Thicker error bar lines
                 capsize=3,               # Width of the horizontal caps
@@ -486,7 +494,7 @@ class HH:
                 fmt='o',
                 markerfacecolor='black', 
                 markeredgewidth=1,     # Thicker border around the point
-                label=f'Data Points V = {V}', 
+                label=f'V$_{{app}}$ = {V}', 
                 color=color,
                 elinewidth=1,            # Thicker error bar lines
                 capsize=3,               # Width of the horizontal caps
@@ -515,21 +523,21 @@ class HH:
         color_cycle = itertools.cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
         fig, ax = plt.subplots(2, 1, figsize=(10,14))
 
-        for V, files in groups.items():
-            # if V == 0.5:
-            #     continue
+        for V, files in sorted(groups.items()):            
+            if V < 1.5 or V > 4:
+                continue
             print(f'Processing voltage: {V} V with files: {files}')
 
             # 2. Use .get() to safely pass None if V is not in zerofield_data
             zf = zerofield_data.get(V, None)
-            self.outputs[V] = self.extract_per_voltage(files, plot=ax, V=V, color=next(color_cycle), zerofield_data=zf, plot_fits=plot_fits)
-        ax[0].set_xlabel('1/(Bext + Bk) ($T^{-1}$)')
-        ax[0].set_ylabel('Coefficient A = $\\left[ \\frac{R_{AHE}}{2} B_{AD} + T \\right] $(m $\\Omega$)')
+            self.outputs[V] = self.extract_per_voltage(files, plot=ax, V=V, color=next(color_cycle), zerofield_data=None, plot_fits=plot_fits)
+        ax[0].set_xlabel('1/($B_{ext}$ + $B_{k}$) ($T^{-1}$)')
+        ax[0].set_ylabel('Coefficient A = $\\left[R_{AHE} \, \\frac{B_{AD}}{B_{ext} + B_{k}} + T \\right] $ ($m \\Omega$)')
         ax[0].set_title('Field Dependence of A cos($\\phi$)')
         ax[0].legend()
-        ax[1].set_xlabel('1/Bext  ($T^{-1}$)')
-        ax[1].set_ylabel('Coefficient B = $\\left[ 2 R_{PHE}(B_{FL} + B_{Oe}) (m \\Omega) \\right]$')
-        ax[1].set_title('Field Dependence of $B (2cos^3(\\phi) - cos(\\phi))$ ')
+        ax[1].set_xlabel('1/$B_{ext}$ ($T^{-1}$)')
+        ax[1].set_ylabel('Coefficient B = $\\left[ 2 R_{PHE} \, \\frac{B_{FL} + B_{Oe}}{B_{ext}} \\right]$ ($m \\Omega$)')
+        ax[1].set_title('Field Dependence of $B \, (2cos^3(\\phi) - cos(\\phi))$ ')
         ax[1].legend()
         self.plot_SOTs()
         return 
@@ -570,31 +578,31 @@ class HH:
             "B_FL_err": B_FL_err,
         })
         plot_df = plot_df.sort_values('Voltage (V)')
-        print(plot_df['Voltage (V)'], self.R)
         plot_df['current_density'], plot_df['I_NM'] = self.calculate_current_density(plot_df["Voltage (V)"], self.R)[0], self.calculate_current_density(plot_df["Voltage (V)"], self.R)[1]  # Current in Amperes
         print(plot_df)
+
         if self.Rahe is None:
             self.Rahe = 1
-        plot_df['B_DL'] = plot_df['B_DL'] / (self.Rahe )
-        plot_df['B_DL_err'] = plot_df['B_DL_err'] * ( self.Rahe)
+        plot_df['B_DL'] = plot_df['B_DL'] / (self.Rahe)
+        plot_df['B_DL_err'] = plot_df['B_DL_err'] / (self.Rahe)
 
         if self.Rphe is None:
             try:
                 self.Rphe, self.Rphe_err = self.fit_1st_harm(plot=False)
             except:
                 self.Rphe = 1e-2
-        plot_df['B_FL'] = plot_df['B_FL'] / (2 * self.Rphe)
+        plot_df['B_FL'] = plot_df['B_FL'] / ( 2* self.Rphe)
         plot_df['B_FL_err'] = plot_df['B_FL_err'] / (2 * self.Rphe)
 
         # Calculate efficiencies using xi_ = 2e/hbar * (Ms * d_FM) * B_/J_NM
         # 3. Plotting
-        fig, ax = plt.subplots(3, 1, figsize=(10, 14))
+        fig, ax = plt.subplots(2, 1, figsize=(10, 10))
 
-        ax[0].errorbar(plot_df['current_density']/1e10, plot_df['B_DL'], yerr=plot_df['B_DL_err'], marker='o', linestyle='none', label='DL SOT Data')
-        ax[0].grid()
+        ax[0].errorbar(plot_df['current_density']/1e10, plot_df['B_DL']*1e3, yerr=plot_df['B_DL_err']*1e3, marker='o', linestyle='none', label='DL SOT')
+        # ax[0].grid()
 
-        ax[1].errorbar(plot_df['current_density']/1e10, plot_df['B_FL'], yerr=plot_df['B_FL_err'], marker='o', linestyle='none', label='FL SOT Data')
-        ax[2].errorbar(plot_df['current_density']/1e10, plot_df['Thermal'], yerr=plot_df['Thermal_err'], marker='o', linestyle='none', label='Thermal SOT Data')
+        ax[1].errorbar(plot_df['current_density']/1e10, plot_df['B_FL'], yerr=plot_df['B_FL_err'], marker='o', linestyle='none', label='FL SOT')
+        # ax[2].errorbar(plot_df['current_density']/1e10, plot_df['Thermal'], yerr=plot_df['Thermal_err'], marker='o', linestyle='none', label='Thermal SOT Data')
         
         # 3. Fit lines through zero for both B_DL and B_FL
         def linear_model(x, S):
@@ -603,6 +611,7 @@ class HH:
         # Fit and plot line through zero
         x_fit = self.create_fit_array(0, np.max(plot_df['current_density']), num_points=200)
         slope_ad, pcov_ad = curve_fit(linear_model, plot_df['current_density'], plot_df['B_DL'])
+
         # Slope and its error
         m_ad = slope_ad[0]
         sigma_m_ad = np.sqrt(pcov_ad[0, 0])
@@ -616,31 +625,33 @@ class HH:
         slope_fl, _ = curve_fit(linear_model, plot_df['current_density'], plot_df['B_FL'])
         slope_thermal, _ = curve_fit(linear_model, plot_df['current_density'], plot_df['Thermal'])
 
-        ax[0].plot(x_fit/1e10, slope_ad[0] * x_fit, '--', color='C0', alpha=0.7, 
-                label=f'DL Fit (m={slope_ad[0]:.2e})')
+        ax[0].plot(x_fit/1e10, slope_ad[0] * x_fit * 1e3, '--', color='C0', alpha=0.7, 
+                label=f'DL Fit (slope={slope_ad[0]:.2e})')
         DL_efficiency = slope_ad[0] * (2 * self.e / self.hbar) * (self.Ms * self.d_FM)
         ax[1].plot(x_fit/1e10, slope_fl[0] * x_fit, '--', color='C1', alpha=0.7, 
-                label=f'FL Fit (m={slope_fl[0]:.2e})')
+                label=f'FL Fit (slope={slope_fl[0]:.2e})')
         FL_efficiency = slope_fl[0] * (2 * self.e / self.hbar) * (self.Ms * self.d_FM)
-        ax[2].plot(x_fit/1e10, slope_thermal[0] * x_fit, '--', color='C2', alpha=0.7, 
-                label=f'Thermal Fit (m={slope_thermal[0]:.2e})')
+        # ax[2].plot(x_fit/1e10, slope_thermal[0] * x_fit, '--', color='C2', alpha=0.7, 
+                # label=f'Thermal Fit (m={slope_thermal[0]:.2e})')
 
         # Formatting
-        ax[0].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)')
-        ax[0].set_ylabel('B_DL (T)')
-        ax[1].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)')
-        ax[1].set_ylabel('B_FL (T)')
-        ax[2].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)')
-        ax[2].set_ylabel('Thermal')
-        plt.suptitle(f'Extracted SOTs vs Charge Current for {self.sample_name}')
-        plt.legend()
+        ax[0].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)', fontsize=14)
+        ax[0].set_ylabel('B$_{DL}$ (mT)', fontsize=14)
+        ax[1].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)', fontsize=14)
+        ax[1].set_ylabel('B$_{FL}$ (mT)', fontsize=14)
+        # ax[2].set_xlabel('Charge current density in Pt ($\\times 10^{10} A/m^2$)')
+        # ax[2].set_ylabel('Thermal')
+        plt.suptitle(f'Effective fields verus charge current density in Pt', fontsize=14)
+        ax[0].legend(loc='upper left')
+        ax[1].legend(loc='upper left')
+        # plt.legend()
         plt.tight_layout()
         plt.show()
-        print("DL_efficiency by fit with Jc", DL_efficiency, "±", DL_efficiency_err)
+        print("DL_efficiency by fit with Jc", DL_efficiency, "±", DL_efficiency_err, "Where the slope is:", slope_ad)
         print("FL_efficiency by fit with Jc", FL_efficiency)
 
         # Calculate efficiencies using xi_ = 2e/hbar * (Ms * d_FM) * B_/E
-        plot_df['E'] = self.calculate_E(self.resitivity, plot_df['current_density'])  # E in V/m
+        plot_df['E'] = self.calculate_E(self.resistivity, plot_df['current_density'])  # E in V/m
         # 3. Plotting
         fig, ax = plt.subplots(3, 1, figsize=(10, 14))
 
@@ -674,7 +685,7 @@ class HH:
         plt.legend()
         plt.tight_layout()
         plt.show()
-        print("DL_efficiency by fit with E", DL_efficiency)
+        print("DL_efficiency by fit with E", DL_efficiency, "Using E=", self.calculate_E(self.resistivity, plot_df['current_density']), "Resistivity=", self.resistivity )
         print("FL_efficiency by fit with E", FL_efficiency)
 
     # Equations and formulae
@@ -735,7 +746,11 @@ class HH:
 
     def calculate_current_density(self, Vrms, R=50, rho_NM=10.6e-8, rho_FM=150e-8):
         Irms = Vrms/R  
-       
+
+        if self.d_FM > 1e-3:
+            self.d_FM *= 1e-9
+        if self.d_NM > 1e-3:
+            self.d_NM *= 1e-9
         # Calculate current density (A/m^2), using geometry and material parameters
         if self.d_NM == 0:
             f_NM = 1
