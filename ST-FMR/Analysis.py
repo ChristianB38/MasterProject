@@ -650,6 +650,69 @@ class STFMR:
 
         plt.show()
 
+    def longitudinal_scan(self, method="Average_fitparams"):
+        try:
+            if self.used_fields == 'Pos':
+                resultspath = os.path.join(self.folder, "fit_results_average_posB.csv")
+            elif self.used_fields == 'Neg':
+                resultspath = os.path.join(self.folder, "fit_results_average_negB.csv")
+        except AttributeError:
+            sys.exit("Folder not set. Please initialize STFMR with a folder path to datafiles.")
+       
+        
+        fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+
+
+        df = pd.read_csv(resultspath)
+
+        self.df = df.sort_values(by="phi")  # sort by angle
+
+        S_XX = lambda phi, S_XX_AMR_art, S_XX_FL, phi0: (
+            S_XX_AMR_art * np.sin(2*(phi - phi0)) * np.cos(phi - phi0) +
+            S_XX_FL * np.sin(2*(phi - phi0))
+        )
+
+        A_XX = lambda phi, A_XX_AMR, A_XX_DL, phi0: (
+            A_XX_AMR * np.sin(2*(phi - phi0)) * np.cos(phi - phi0) +
+            A_XX_DL * np.sin(2*(phi - phi0))
+        )
+
+        # convert to radians for fitting
+        phi_deg = self.df['phi'].to_numpy()
+        phi_rad = np.mod(np.deg2rad(phi_deg), 2*np.pi)
+        phi_deg_plot = self.create_fit_array(min(phi_deg), max(phi_deg), num_points=200)
+        phi_plot_rad = np.mod(np.deg2rad(phi_deg_plot), 2*np.pi)
+        print(min(df['Vs']))
+        params_S, cov_S = curve_fit(S_XX, phi_rad, self.df['Vs'], bounds=([-np.inf, -np.inf, -np.pi/4], [np.inf, np.inf, np.pi/4]))
+        params_A, cov_A = curve_fit(A_XX, phi_rad, self.df['Va'], bounds=([-np.inf, -np.inf, -np.pi/4], [np.inf, np.inf, np.pi/4]), maxfev=5000)
+
+        S_XX_AMR_art, S_XX_FL, phi0_S = params_S
+        A_XX_AMR, A_XX_DL, phi0_A = params_A
+
+        # --- Plot Vs vs phi ---
+        axes[0].errorbar(phi_deg, self.df["Vs"], yerr=self.df['Vsstd'], xerr=None, fmt="o", label="S")
+        axes[0].plot(phi_deg_plot, S_XX(phi_plot_rad, *params_S), label='Fit signal S', color='orange')
+        axes[0].plot(phi_deg_plot, S_XX_AMR_art * np.sin(2*(phi_plot_rad - phi0_S)) * np.cos(phi_plot_rad - phi0_S),
+                     label=r"$S^\mathrm{AMR\_art}_{XX}\sin(2\phi)\cos(\phi)$", linestyle='--')
+        axes[0].plot(phi_deg_plot, S_XX_FL * np.sin(2*(phi_plot_rad - phi0_S)),
+                     label=r"$S^\mathrm{FL}_{XX}\sin(2\phi)$", linestyle='--')
+        axes[0].set_xlabel("phi (deg)")
+        axes[0].set_ylabel(r"V ($\mu$V)")
+        axes[0].grid(True)
+        axes[0].legend(fontsize=14)
+
+        # --- Plot Va vs phi ---
+        axes[1].errorbar(phi_deg, self.df["Va"], yerr=self.df['Vastd'], xerr=None, fmt="s", color="red", label="A")
+        axes[1].plot(phi_deg_plot, A_XX(phi_plot_rad, *params_A), label='Fit signal A', color='orange')
+        axes[1].plot(phi_deg_plot, A_XX_AMR * np.sin(2*(phi_plot_rad - phi0_A)) * np.cos(phi_plot_rad - phi0_A),
+                     label=r"$A^\mathrm{AMR}_{XX}\sin(2\phi)\cos(\phi)$", linestyle='--')
+        axes[1].plot(phi_deg_plot, A_XX_DL * np.sin(2*(phi_plot_rad - phi0_A)),
+                     label=r"$A^\mathrm{DL}_{XX}\sin(2\phi)$", linestyle='--')
+        axes[1].set_xlabel("phi (deg)")
+        axes[1].set_ylabel(r"A ($\mu$V)")
+        axes[1].grid(True)
+        axes[1].legend(fontsize=14)
+
     def transverse_scan(self, method="Average_fitparams"):
         try:
             if self.used_fields == 'Pos':
@@ -1499,7 +1562,7 @@ class STFMR:
         return
 
 
-    def DCScan(self, method='Average_fitparams', Meff=1.12, Meff_err=None):
+    def DCScan(self, method='Average_fitparams', Meff=1.12, Meff_err=None, resistivity_Pt=None, resistivity_CFB=None):
         DC_folder = self.folder
 
         resultspath_pos = os.path.join(DC_folder, "fit_results_average_posB.csv")
@@ -1534,8 +1597,8 @@ class STFMR:
         df_pos = df_pos.sort_values(by="dc")  # sort by dc current
         df_neg = df_neg.sort_values(by="dc")  # sort by dc current        
 
-        df_pos["J_Pt"] = self.calculate_current_density_from_DC(df_pos["dc"]*1e-3)
-        df_neg["J_Pt"] = self.calculate_current_density_from_DC(df_neg["dc"]*1e-3)
+        df_pos["J_Pt"] = self.calculate_current_density_from_DC(df_pos["dc"]*1e-3, rho_NM=resistivity_Pt, rho_FM=resistivity_CFB)
+        df_neg["J_Pt"] = self.calculate_current_density_from_DC(df_neg["dc"]*1e-3, rho_NM=resistivity_Pt, rho_FM=resistivity_CFB)
 
         angle, frequency, Hext, Hext_err = np.average(df_pos['phi']), np.average(df_pos["freq"])*1e9, np.average(df_pos["Hres"]), np.std(df_pos["Hres"])
 
@@ -1941,6 +2004,11 @@ class STFMR:
         return current_density, I_NM, current_amplitude
     
     def calculate_current_density_from_DC(self, I, rho_NM=30.6e-8, rho_FM=125e-8):
+        if rho_NM is None:
+            rho_NM=30.6e-8
+        if rho_FM is None:
+            rho_FM=125e-8
+
         width = self.Width 
         thickness_FM, thickness_NM = self.d_FM , self.d_NM 
         
@@ -3272,11 +3340,11 @@ class STFMR_thickness_analysis:
         # ---- xi_FMR vs t_NM ----
         self.plot_grouped_errorbars(
             df=df,
-            x="t_FM",
+            x="t_NM",
             y="Xi_fmr",
             yerr="Xi_fmr_std",
             scale_x=1e9,
-            xlabel="$t_{CoFeB}$ (nm)",
+            xlabel="$t_{Pt}$ (nm)",
             ylabel=r"$\xi_{FMR}$",
             legend_loc="lower left",
             title=title
